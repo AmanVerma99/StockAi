@@ -1,6 +1,9 @@
 import { RouterProvider, createBrowserRouter } from "react-router-dom";
 import HomeLayout from "./pages/HomeLayout";
 import HomeContent from "./components/HomeContent"; // ✅ Add this
+import Signup from "./pages/signUp";
+import Login from "./pages/login";
+import PortfolioManager from "./components/PortfolioManager";
 
 const router = createBrowserRouter([
   {
@@ -12,6 +15,18 @@ const router = createBrowserRouter([
         element: <HomeContent />, // ✅ HomeContent renders QuickPicks & AlbumForYou
       },
     ],
+  },
+  {
+    path: "/profile",
+    element: <PortfolioManager />,
+  },
+  {
+    path: "/register",
+    element: <Signup />,
+  },
+  {
+    path: "/login",
+    element: <Login />,
   },
 
 ]);

@@ -14,7 +14,7 @@ const SearchStockNews = () => {
     setError("");
 
     try {
-      const response = await fetch(`/api/stock-news/${keyword}`);
+      const response = await fetch(`/api/news/stock/${keyword}`);
       if (!response.ok) throw new Error("Failed to fetch news");
 
       const data = await response.json();
