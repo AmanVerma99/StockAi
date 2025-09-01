@@ -1,80 +1,72 @@
-import User from "../models/users.js";
+// controllers/userController.js
 import jwt from "jsonwebtoken";
+import bcrypt from "bcryptjs";
+import User from "../models/users.js";
 
-// ⚠️ For development only — move these to .env in production
-const JWT_SECRET = "11235";
-const REFRESH_SECRET = "11235";
+const JWT_SECRET = process.env.JWT_SECRET || "11235";
+const REFRESH_SECRET = process.env.REFRESH_SECRET || "11235";
 
-// Helper: Generate Access & Refresh Tokens
+// 🔑 Generate Access & Refresh Tokens
 const generateTokens = async (userId) => {
+  const accessToken = jwt.sign({ userId }, JWT_SECRET, { expiresIn: "15m" });
+  const refreshToken = jwt.sign({ userId }, REFRESH_SECRET, { expiresIn: "7d" });
+
+  // Save refresh token in DB
   const user = await User.findById(userId);
-  if (!user) throw new Error("User not found");
-
-  const accessToken = jwt.sign({ userId: user._id }, JWT_SECRET, { expiresIn: "15m" });
-  const refreshToken = jwt.sign({ userId: user._id }, REFRESH_SECRET, { expiresIn: "7d" });
-
   user.refreshToken = refreshToken;
   await user.save({ validateBeforeSave: false });
 
   return { accessToken, refreshToken };
 };
 
-// ✅ Register (no hashing)
+// ✅ REGISTER
 export const register = async (req, res) => {
-  const { name, email, password } = req.body;
-
   try {
+    const { name, email, password } = req.body;
+
     const existingUser = await User.findOne({ email });
-    if (existingUser) {
+    if (existingUser)
       return res.status(400).json({ error: "User already exists" });
-    }
 
-    const user = new User({ name, email, password }); // storing plain text
+    const hashedPassword = await bcrypt.hash(password, 10);
+
+    const user = new User({ name, email, password: hashedPassword });
     await user.save();
-
-    res.status(201).json({
-      message: "User registered successfully",
-      user: { id: user._id, name: user.name, email: user.email },
-    });
-  } catch (err) {
-    console.error("❌ Registration error:", err.message);
-    res.status(500).json({ error: "Server error during registration" });
-  }
-};
-
-// ✅ Plain-text password comparison
-const compare = (enteredPassword, storedPassword) => {
-  return enteredPassword === storedPassword;
-};
-
-// ✅ Login
-export const login = async (req, res) => {
-  const { email, password } = req.body;
-  console.log("🔑 Password entered:", password);
-
-  try {
-    const user = await User.findOne({ email });
-    if (!user) {
-      return res.status(400).json({ error: "Email not found" });
-    }
-
-    if (!compare(password, user.password)) {
-      return res.status(400).json({ error: "Password does not match" });
-    }
 
     const { accessToken, refreshToken } = await generateTokens(user._id);
 
     res
-      .cookie("accessToken", accessToken, {
-        httpOnly: true,
-        secure: process.env.NODE_ENV === "production",
-        sameSite: "strict",
-      })
-      .cookie("refreshToken", refreshToken, {
-        httpOnly: true,
-        secure: process.env.NODE_ENV === "production",
-        sameSite: "strict",
-      })
+      .cookie("accessToken", accessToken, { httpOnly: true })
+      .cookie("refreshToken", refreshToken, { httpOnly: true })
+      .status(201)
+      .json({
+        message: "User registered successfully",
+        user: { id: user._id, name: user.name, email: user.email },
+        accessToken,
+        refreshToken,
+      });
+  } catch (err) {
+    console.error("❌ Register error:", err.message);
+    res.status(500).json({ error: "Server error during registration" });
+  }
+};
+
+// ✅ LOGIN
+export const login = async (req, res) => {
+  try {
+    const { email, password } = req.body;
+
+    const user = await User.findOne({ email });
+    if (!user) return res.status(400).json({ error: "Invalid credentials" });
+
+    const isMatch = await bcrypt.compare(password, user.password);
+    if (!isMatch) return res.status(400).json({ error: "Invalid credentials" });
+
+    const { accessToken, refreshToken } = await generateTokens(user._id);
+
+    res
+      .cookie("accessToken", accessToken, { httpOnly: true })
+      .cookie("refreshToken", refreshToken, { httpOnly: true })
       .json({
         message: "Login successful",
         user: { id: user._id, name: user.name, email: user.email },
@@ -87,61 +79,60 @@ export const login = async (req, res) => {
   }
 };
 
-// ✅ Logout
+// ✅ LOGOUT
 export const logout = async (req, res) => {
   try {
-    const token = req.cookies.refreshToken;
-    if (!token) return res.status(400).json({ error: "No refresh token found" });
+    const { userId } = req.user;
 
-    const user = await User.findOne({ refreshToken: token });
-    if (user) {
-      user.refreshToken = null;
-      await user.save({ validateBeforeSave: false });
-    }
+    // Clear refresh token in DB
+    await User.findByIdAndUpdate(userId, { refreshToken: "" });
 
     res
       .clearCookie("accessToken")
       .clearCookie("refreshToken")
-      .json({ message: "User logged out successfully" });
+      .json({ message: "Logged out successfully" });
   } catch (err) {
-    console.error("Logout error:", err.message);
     res.status(500).json({ error: "Server error during logout" });
   }
 };
 
-// ✅ Refresh Token
+// ✅ REFRESH ACCESS TOKEN
 export const refreshAccessToken = async (req, res) => {
-  try {
-    const incomingToken = req.cookies.refreshToken;
-    if (!incomingToken) return res.status(401).json({ error: "Unauthorized" });
+  const refreshToken =
+    req.cookies.refreshToken || req.body.refreshToken || req.headers["x-refresh-token"];
 
-    const decoded = jwt.verify(incomingToken, REFRESH_SECRET);
+  if (!refreshToken)
+    return res.status(401).json({ error: "No refresh token provided" });
+
+  try {
+    const decoded = jwt.verify(refreshToken, REFRESH_SECRET);
     const user = await User.findById(decoded.userId);
 
-    if (!user || user.refreshToken !== incomingToken) {
+    if (!user || user.refreshToken !== refreshToken) {
       return res.status(403).json({ error: "Invalid refresh token" });
     }
 
-    const accessToken = jwt.sign({ userId: user._id }, JWT_SECRET, { expiresIn: "15m" });
+    const { accessToken, refreshToken: newRefreshToken } = await generateTokens(
+      user._id
+    );
 
     res
-      .cookie("accessToken", accessToken, { httpOnly: true, secure: false })
-      .json({ accessToken });
+      .cookie("accessToken", accessToken, { httpOnly: true })
+      .cookie("refreshToken", newRefreshToken, { httpOnly: true })
+      .json({ accessToken, refreshToken: newRefreshToken });
   } catch (err) {
-    console.error("❌ Token refresh error:", err.message);
-    res.status(403).json({ error: "Could not refresh token" });
+    return res.status(403).json({ error: "Invalid or expired refresh token" });
   }
 };
 
-// ✅ Get Current User
+// ✅ GET CURRENT USER
 export const getCurrentUser = async (req, res) => {
   try {
     const user = await User.findById(req.user.userId).select("-password -refreshToken");
     if (!user) return res.status(404).json({ error: "User not found" });
 
-    res.status(200).json({ user });
+    res.json(user);
   } catch (err) {
-    console.error("❌ Fetch current user error:", err.message);
-    res.status(500).json({ error: "Failed to fetch user" });
+    res.status(500).json({ error: "Server error fetching user" });
   }
 };
